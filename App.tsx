@@ -7,6 +7,7 @@ import {ROUTES} from './src/utils/routes';
 import Permission from './src/screens/Permission';
 import NoCameraDevice from './src/screens/NoCameraDevice';
 import CameraScreen from './src/screens/CameraScreen-v1';
+import Passport from './src/screens/Passport';
 
 const Stack = createNativeStackNavigator();
 
@@ -30,6 +31,11 @@ function App(): React.JSX.Element {
           <Stack.Screen
             name={ROUTES.NO_CAMERA_DEVICE}
             component={NoCameraDevice}
+            options={{headerShown: false}}
+          />
+          <Stack.Screen
+            name={ROUTES.PASSPORT_DETECTED}
+            component={Passport}
             options={{headerShown: false}}
           />
         </Stack.Navigator>

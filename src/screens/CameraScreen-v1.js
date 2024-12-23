@@ -1,5 +1,4 @@
-import {useNavigation} from '@react-navigation/native';
-import React from 'react';
+import React, {useEffect, useRef, useState} from 'react';
 import {StyleSheet, Text, TouchableOpacity, View} from 'react-native';
 import {
   Camera,
@@ -7,64 +6,124 @@ import {
   useCameraPermission,
   useFrameProcessor,
 } from 'react-native-vision-camera';
+import {useNavigation} from '@react-navigation/native';
 import Feather from 'react-native-vector-icons/Feather';
+import {
+  Tensor,
+  TensorflowModel,
+  useTensorflowModel,
+} from 'react-native-fast-tflite';
+import {useResizePlugin} from 'vision-camera-resize-plugin';
+// import {useSharedValue} from 'react-native-reanimated';
 import {ROUTES} from '../utils/routes';
-import {useTensorflowModel} from 'react-native-fast-tflite';
-// import {useResizePlugin} from 'vision-camera-resize-plugin';
+import {useRunOnJS, useWorklet} from 'react-native-worklets-core';
+
+function tensorToString(tensor) {
+  return `\n  - ${tensor.dataType} ${tensor.name}[${tensor.shape}]`;
+}
+function modelToString(model) {
+  return (
+    `TFLite Model (${model.delegate}):\n` +
+    `- Inputs: ${model.inputs.map(tensorToString).join('')}\n` +
+    `- Outputs: ${model.outputs.map(tensorToString).join('')}`
+  );
+}
 
 function CameraScreen() {
   const navigation = useNavigation();
   const device = useCameraDevice('back');
   const {hasPermission} = useCameraPermission();
   const {container, flashWrapper} = styles;
+  const [prediction, setPrediction] = useState('');
+  const [capturedImage, setCapturedImage] = useState(null);
+  const lastProcessedRef = useRef(Date.now());
   // FRAMEPRESSOR
-  // const objectDetection = useTensorflowModel(
-  //   require('../../assets/passport_detection_model.tflite'),
-  // );
-  const objectDetection = useTensorflowModel(
+  const model = useTensorflowModel(
     require('../assets/passport_detection_model.tflite'),
   );
-  // const model =
-  //   objectDetection.state === 'loaded' ? objectDetection.model : undefined;
-  // const resize = useResizePlugin();
-  const frameProcessor = useFrameProcessor(frame => {
-    'worklet';
-    // if (model === null) return;
-    // 1. Resize 4k Frame to 192x192x3 using vision-camera-resize-plugin
-    // const resized = resize(frame, {
-    //   scale: {
-    //     width: 192,
-    //     height: 192,
-    //   },
-    //   pixelFormat: 'rgb',
-    //   dataType: 'uint8',
-    // });
-    // 2. Run model with given input buffer synchronously
-    // const outputs = model.runSync([frame]);
-    // // 3. Interpret outputs accordingly
-    // const detection_boxes = outputs[0];
-    // const detection_classes = outputs[1];
-    // const detection_scores = outputs[2];
-    // const num_detections = outputs[3];
-    // console.log(`Detected ${num_detections[0]} objects!`);
-    console.log(`Frame: ${frame.width}x${frame.height} (${frame.pixelFormat})`);
-
-    // for (let i = 0; i < detection_boxes.length; i += 4) {
-    //   const confidence = detection_scores[i / 4];
-    //   if (confidence > 0.7) {
-    //     // 4. Draw a red box around the detected object!
-    //     const left = detection_boxes[i];
-    //     const top = detection_boxes[i + 1];
-    //     const right = detection_boxes[i + 2];
-    //     const bottom = detection_boxes[i + 3];
-    //     // const rect = SkRect.Make(left, top, right, bottom);
-    //     // canvas.drawRect(rect, SkColors.Red);
-    //   }
-    // }
+  const actualModel = model.state === 'loaded' ? model.model : undefined;
+  const resize = useResizePlugin();
+  const classLabels = ['blurry', 'not_passport', 'passport'];
+  const savePrediction = useRunOnJS(label => {
+    setPrediction(label);
+    // console.log("hello from JS!")
   }, []);
+
+  const worklet = useWorklet(
+    'default',
+    label => {
+      'worklet';
+      // console.log('hello from worklet!');
+      savePrediction(label);
+    },
+    [savePrediction],
+  );
+  const frameProcessor = useFrameProcessor(
+    frame => {
+      'worklet';
+      // const now = Date.now();
+      // if (now - lastProcessedRef.current >= 3000) { // 3000ms = 3 seconds
+      //   // Your frame processing logic here
+      //   console.log('Processing frame:', frame);
+
+      //   // Update the last processed timestamp
+      //   lastProcessedRef.current = now;
+      // }
+      const resized = resize.resize(frame, {
+        scale: {
+          width: 320,
+          height: 320,
+        },
+        pixelFormat: 'rgb',
+        dataType: 'uint8',
+      });
+      // Run inference with the TensorFlow Lite model
+      const result = actualModel?.runSync([resized]);
+      // Get the index of the class with the highest confidence
+      const confidences = result[0];
+      // const predictedIndex = confidences.indexOf(Math.max(...confidences));
+      // Map the index to the class label
+      // const predictedClass = classLabels[predictedIndex];
+      // setPrediction(predictedClass);
+      // Log inference results
+      // const num_detections = result[3]?.[0] ?? 0;
+      const indexOfMax = arr => {
+        if (arr.length === 0) {
+          return -1;
+        }
+
+        var max = arr[0];
+        var maxIndex = 0;
+
+        for (var i = 1; i < arr.length; i++) {
+          if (arr[i] > max) {
+            maxIndex = i;
+            max = arr[i];
+          }
+        }
+
+        return maxIndex;
+      };
+      const maxIndex = indexOfMax(Object.values(confidences));
+      console.log('abc', maxIndex);
+      const label = classLabels[indexOfMax(Object.values(confidences))];
+      worklet(label);
+      const today = new Date();
+      console.log(
+        'Result: ',
+        label,
+        `${today.getHours()}-${today.getMinutes()}-${today.getSeconds()}`,
+      );
+    },
+    [actualModel],
+  );
   if (!hasPermission) {
     navigation.navigate(ROUTES.PERMISSION);
   }
+  useEffect(() => {
+    if (actualModel == null) return;
+    console.log(`Model loaded! Shape:\n${modelToString(actualModel)}]`);
+  }, [actualModel]);
   return (
     <View style={container}>
       {device ? (
@@ -73,13 +132,20 @@ function CameraScreen() {
             device={device}
             isActive={true}
             style={container}
+            pixelFormat="rgb"
             frameProcessor={frameProcessor}
+            frameProcessorFps={1} // Process one frame per second
+            // fps={30}
           />
           <TouchableOpacity
             onPress={() => console.log('flash pressed')}
             style={flashWrapper}>
             <Feather name="zap" size={30} color={'#111'} />
           </TouchableOpacity>
+          {/* Display the prediction */}
+          <View style={styles.predictionWrapper}>
+            <Text style={styles.predictionText}>Prediction: {prediction}</Text>
+          </View>
         </>
       ) : (
         <>
@@ -106,6 +172,19 @@ const styles = StyleSheet.create({
     paddingVertical: 4,
     borderRadius: '100%',
     backgroundColor: '#e9ecef',
+  },
+  predictionWrapper: {
+    position: 'absolute',
+    bottom: 50,
+    left: 20,
+    backgroundColor: 'rgba(0, 0, 0, 0.6)',
+    padding: 10,
+    borderRadius: 10,
+  },
+  predictionText: {
+    color: '#fff',
+    fontSize: 20,
+    fontWeight: 'bold',
   },
   flashcontainer: {},
 });
